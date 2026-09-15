@@ -103,7 +103,7 @@ if [ "${SPEEDER_SERVERS:-4}" -gt 0 ] 2>/dev/null; then
 Description=UDPspeeder FEC server $i
 After=network-online.target
 [Service]
-ExecStart=${SPBIN} -s -l0.0.0.0:${sp} -r127.0.0.1:${LISTEN_PORT} -f4:2 -k "${PASSWORD}" --mode 0 --timeout 8
+ExecStart=${SPBIN} -s -l0.0.0.0:${sp} -r127.0.0.1:${LISTEN_PORT} -f4:1 -k "${PASSWORD}" --mode 0 --timeout 8
 Restart=always
 RestartSec=3
 [Install]
