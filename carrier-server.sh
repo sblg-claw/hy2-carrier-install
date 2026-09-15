@@ -86,7 +86,36 @@ LimitNOFILE=1048576
 [Install]
 WantedBy=multi-user.target
 EOF
+
+# 4b. UDPspeeder FEC servers(分片并行,4 实例 47000-47003 → 本地 hy2 46000;churn 重建自动装回)
+#     FEC key 复用 PASSWORD。SPEEDER_SERVERS=0 可关。
+if [ "${SPEEDER_SERVERS:-4}" -gt 0 ] 2>/dev/null; then
+  SPBIN=/usr/local/bin/speederv2
+  if [ ! -x "$SPBIN" ]; then
+    spurl="https://github.com/wangyu-/UDPspeeder/releases/download/20230206.0/speederv2_binaries.tar.gz"
+    tmp=$(mktemp -d); curl -fsSL --retry 3 -o "$tmp/s.tgz" "$spurl" && tar xzf "$tmp/s.tgz" -C "$tmp" && cp "$tmp/speederv2_${A}" "$SPBIN" && chmod +x "$SPBIN"; rm -rf "$tmp"
+  fi
+  if [ -x "$SPBIN" ]; then
+    for i in 0 1 2 3; do
+      sp=$((47000+i))
+      cat > /etc/systemd/system/udpspeeder-server-$i.service <<EOF
+[Unit]
+Description=UDPspeeder FEC server $i
+After=network-online.target
+[Service]
+ExecStart=${SPBIN} -s -l0.0.0.0:${sp} -r127.0.0.1:${LISTEN_PORT} -f4:2 -k "${PASSWORD}" --mode 0 --timeout 8
+Restart=always
+RestartSec=3
+[Install]
+WantedBy=multi-user.target
+EOF
+      command -v ufw >/dev/null 2>&1 && ufw allow "${sp}/udp" >/dev/null 2>&1 || true
+    done
+  fi
+fi
+
 systemctl daemon-reload
+[ "${SPEEDER_SERVERS:-4}" -gt 0 ] 2>/dev/null && systemctl enable --now udpspeeder-server-0 udpspeeder-server-1 udpspeeder-server-2 udpspeeder-server-3 >/dev/null 2>&1 || true
 systemctl enable --now hy2carrier-server >/dev/null 2>&1 || systemctl restart hy2carrier-server
 
 # 5. 本机防火墙(云厂商 NSG/安全组需另行放行 UDP)
