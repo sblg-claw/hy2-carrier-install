@@ -118,8 +118,28 @@ systemctl daemon-reload
 [ "${SPEEDER_SERVERS:-4}" -gt 0 ] 2>/dev/null && systemctl enable --now udpspeeder-server-0 udpspeeder-server-1 udpspeeder-server-2 udpspeeder-server-3 >/dev/null 2>&1 || true
 systemctl enable --now hy2carrier-server >/dev/null 2>&1 || systemctl restart hy2carrier-server
 
+# 4c-auto. 未显式传 CARRIER_ID → 从云 IMDS 自动认身份(Azure VM名 / AWS 实例名+区域)
+#          这样 rebuild/churn 后开机脚本无需 per-机配置,自动用同一身份重注册(名字跨重建不变)
+if [ -z "${CARRIER_ID:-}" ]; then
+  _azn=$(curl -fsS -m3 -H "Metadata:true" "http://169.254.169.254/metadata/instance/compute/name?api-version=2021-02-01&format=text" 2>/dev/null)
+  if [ -n "$_azn" ]; then
+    CARRIER_ID="$_azn"; CARRIER_PROVIDER="${CARRIER_PROVIDER:-azure}"
+    _azl=$(curl -fsS -m3 -H "Metadata:true" "http://169.254.169.254/metadata/instance/compute/location?api-version=2021-02-01&format=text" 2>/dev/null)
+    case "$_azl" in *japan*) CARRIER_REGION="${CARRIER_REGION:-jp}";; *hongkong*|*eastasia*) CARRIER_REGION="${CARRIER_REGION:-hk}";; esac
+  else
+    _at=$(curl -fsS -m3 -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 120" 2>/dev/null)
+    _an=$(curl -fsS -m3 -H "X-aws-ec2-metadata-token: $_at" "http://169.254.169.254/latest/meta-data/tags/instance/Name" 2>/dev/null)
+    _ai=$(curl -fsS -m3 -H "X-aws-ec2-metadata-token: $_at" "http://169.254.169.254/latest/meta-data/instance-id" 2>/dev/null)
+    [ -n "$_an" ] && CARRIER_ID="$_an" || { [ -n "$_ai" ] && CARRIER_ID="$_ai"; }
+    [ -n "${CARRIER_ID:-}" ] && CARRIER_PROVIDER="${CARRIER_PROVIDER:-aws}"
+    _az=$(curl -fsS -m3 -H "X-aws-ec2-metadata-token: $_at" "http://169.254.169.254/latest/meta-data/placement/availability-zone" 2>/dev/null)
+    case "$_az" in ap-northeast*) CARRIER_REGION="${CARRIER_REGION:-jp}";; ap-east*) CARRIER_REGION="${CARRIER_REGION:-hk}";; esac
+  fi
+  [ -n "${CARRIER_ID:-}" ] && echo "[4c] IMDS 自动认身份: CARRIER_ID=$CARRIER_ID REGION=${CARRIER_REGION:-?} PROVIDER=${CARRIER_PROVIDER:-?}"
+fi
+
 # 4c. 心跳自注册 agent(承载自报当前公网IP到面板;churn 重建后自动重装)
-#     需 CARRIER_ID + PANEL + CARRIER_SECRET;缺任一则跳过(向后兼容)
+#     需 CARRIER_ID(可 IMDS 自动认) + PANEL + CARRIER_SECRET;缺 PANEL/SECRET 则跳过
 if [ -n "${CARRIER_ID:-}" ] && [ -n "${PANEL:-}" ] && [ -n "${CARRIER_SECRET:-}" ]; then
   mkdir -p /etc/hy2carrier
   cat > /etc/hy2carrier/hb.env <<EOF
