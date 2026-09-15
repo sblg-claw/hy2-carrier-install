@@ -118,6 +118,48 @@ systemctl daemon-reload
 [ "${SPEEDER_SERVERS:-4}" -gt 0 ] 2>/dev/null && systemctl enable --now udpspeeder-server-0 udpspeeder-server-1 udpspeeder-server-2 udpspeeder-server-3 >/dev/null 2>&1 || true
 systemctl enable --now hy2carrier-server >/dev/null 2>&1 || systemctl restart hy2carrier-server
 
+# 4c. 心跳自注册 agent(承载自报当前公网IP到面板;churn 重建后自动重装)
+#     需 CARRIER_ID + PANEL + CARRIER_SECRET;缺任一则跳过(向后兼容)
+if [ -n "${CARRIER_ID:-}" ] && [ -n "${PANEL:-}" ] && [ -n "${CARRIER_SECRET:-}" ]; then
+  mkdir -p /etc/hy2carrier
+  cat > /etc/hy2carrier/hb.env <<EOF
+PANEL=${PANEL}
+SECRET=${CARRIER_SECRET}
+CID=${CARRIER_ID}
+REGION=${CARRIER_REGION:-}
+PROVIDER=${CARRIER_PROVIDER:-}
+EOF
+  cat > /usr/local/bin/hy2carrier-hb.sh <<'EOS'
+#!/bin/bash
+. /etc/hy2carrier/hb.env
+IP=$(curl -fsS4 -m8 ifconfig.me 2>/dev/null || curl -fsS4 -m8 api.ipify.org 2>/dev/null)
+[ -z "$IP" ] && exit 0
+HY=$(systemctl is-active hy2carrier-server >/dev/null 2>&1 && echo true || echo false)
+SP=$(systemctl is-active udpspeeder-server-0 >/dev/null 2>&1 && echo true || echo false)
+curl -fsS -m10 -X POST "$PANEL/api/carrier/register?secret=$SECRET" -H 'Content-Type: application/json' \
+  -d "{\"cid\":\"$CID\",\"region\":\"$REGION\",\"provider\":\"$PROVIDER\",\"ip\":\"$IP\",\"hy2_active\":$HY,\"speeder_active\":$SP}" >/dev/null 2>&1
+EOS
+  chmod +x /usr/local/bin/hy2carrier-hb.sh
+  cat > /etc/systemd/system/hy2carrier-hb.service <<EOF
+[Unit]
+Description=hy2carrier heartbeat register
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/hy2carrier-hb.sh
+EOF
+  cat > /etc/systemd/system/hy2carrier-hb.timer <<EOF
+[Unit]
+Description=hy2carrier heartbeat every 30s
+[Timer]
+OnBootSec=15
+OnUnitActiveSec=30
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload; systemctl enable --now hy2carrier-hb.timer >/dev/null 2>&1
+  /usr/local/bin/hy2carrier-hb.sh || true
+fi
+
 # 5. 本机防火墙(云厂商 NSG/安全组需另行放行 UDP)
 command -v ufw >/dev/null 2>&1 && ufw allow "${LISTEN_PORT}/udp" >/dev/null 2>&1 || true
 command -v firewall-cmd >/dev/null 2>&1 && { firewall-cmd --add-port="${LISTEN_PORT}/udp" --permanent >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1; } || true
